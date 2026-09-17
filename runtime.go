@@ -147,7 +147,7 @@ func (r *runtime) restartWorker() {
 			case <-ctx.Done():
 				return
 			case <-timer.C:
-				_, _ = r.run(context.Background(), true, "自动调度")
+				_, _ = r.run(context.Background(), true, "Automatic scheduling")
 				timer.Reset(cfg.interval())
 			}
 		}
@@ -245,7 +245,7 @@ func (r *runtime) inspect(ctx context.Context) (plan, error) {
 		}
 		credentials = append(credentials, credentialState{
 			Provider: provider, Account: maskAccount(firstText(file.Email, file.Account, file.Name)), AuthIndex: file.AuthIndex,
-			CurrentTier: current, ProposedTier: current, Reason: "等待额度探测", Quota: quota,
+			CurrentTier: current, ProposedTier: current, Reason: "Waiting for quota check", Quota: quota,
 			Disabled: file.Disabled, Unavailable: file.Unavailable,
 		})
 	}
@@ -253,9 +253,11 @@ func (r *runtime) inspect(ctx context.Context) (plan, error) {
 	return plan{GeneratedAt: time.Now().UTC(), Strategy: cfg.Strategy, Credentials: credentials}, nil
 }
 
+var errProbeInProgress = errors.New("A quota check is already in progress")
+
 func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, error) {
 	if !r.runMu.TryLock() {
-		return plan{}, errors.New("已有一轮探测正在执行")
+		return plan{}, errProbeInProgress
 	}
 	defer r.runMu.Unlock()
 	files, err := r.host.listAuth(ctx)
@@ -303,7 +305,7 @@ func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, er
 	}
 	if apply {
 		if err := r.applyPlan(ctx, files, result); err != nil {
-			r.recordHistory(trigger, result.Changes, 1, "应用失败："+safeError(err))
+			r.recordHistory(trigger, result.Changes, 1, "Apply failed: "+safeError(err))
 			return plan{}, err
 		}
 		r.recordHistory(trigger, result.Changes, result.Unknown, historySummary(result))
@@ -337,39 +339,39 @@ func failedQuota(previous quotaSnapshot, probeErr error, threshold int, now time
 
 func chooseTier(cfg settings, file authFile, current tierName, quota quotaSnapshot, now time.Time) (tierName, string) {
 	if file.Unavailable {
-		return current, "凭证当前不可用，保持原层级"
+		return current, "Credential is unavailable; keeping its current tier"
 	}
 	if file.Disabled {
-		return tierPaused, "凭证已由外部停用，不自动恢复"
+		return tierPaused, "Credential was disabled externally; it will not be reactivated automatically"
 	}
 	if quota.Status == quotaUnknown || quota.Status == quotaRetry || quota.Remaining == nil {
-		return current, "额度暂时未知，保持原层级"
+		return current, "Quota is temporarily unknown; keeping the current tier"
 	}
 	remaining := *quota.Remaining
 	if remaining <= 0 {
-		return tierPaused, "额度已耗尽，等待重置"
+		return tierPaused, "Quota exhausted; waiting for reset"
 	}
 	switch cfg.Strategy {
 	case strategyRotate:
-		return tierRegular, "健康凭证同层轮换"
+		return tierRegular, "Healthy credentials rotate at the same tier"
 	case strategyReset:
 		if quota.ResetAt != nil && quota.ResetAt.After(now) && quota.ResetAt.Sub(now) <= 24*time.Hour {
-			return tierPrimary, "24 小时内重置且仍有余额"
+			return tierPrimary, "Quota resets within 24 hours and has remaining capacity"
 		}
-		return tierRegular, "健康凭证常规使用"
+		return tierRegular, "Healthy credential in regular use"
 	case strategyManual:
 		if selected, ok := cfg.ManualTiers[file.AuthIndex]; ok {
-			return selected, "手动设置"
+			return selected, "Manually assigned"
 		}
-		return current, "尚未手动调整"
+		return current, "No manual tier selected"
 	default:
 		switch {
 		case remaining >= 50:
-			return tierPrimary, "剩余额度不少于 50%"
+			return tierPrimary, "At least 50% quota remaining"
 		case remaining >= 20:
-			return tierRegular, "剩余额度为 20%–49%"
+			return tierRegular, "20%–49% quota remaining"
 		default:
-			return tierBackup, "剩余额度为 1%–19%"
+			return tierBackup, "1%–19% quota remaining"
 		}
 	}
 }
@@ -440,9 +442,9 @@ func (r *runtime) recordHistory(trigger string, changes, errorsCount int, summar
 
 func historySummary(result plan) string {
 	if result.Changes == 0 {
-		return "本轮探测完成，没有需要调整的凭证"
+		return "Quota check complete; no credentials need changes"
 	}
-	return fmt.Sprintf("本轮调整 %d 个凭证；新的优先级主要影响后续请求", result.Changes)
+	return fmt.Sprintf("Updated %d credentials; new priorities mainly affect future requests", result.Changes)
 }
 
 func safeError(err error) string {

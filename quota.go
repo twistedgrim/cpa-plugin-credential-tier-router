@@ -79,14 +79,14 @@ func probeCodex(ctx context.Context, host hostAPI, authIndex string, material au
 	}
 	response, err := host.httpDo(ctx, hostHTTPRequest{AuthIndex: authIndex, Method: http.MethodGet, URL: "https://chatgpt.com/backend-api/wham/usage", Headers: headers})
 	if err != nil {
-		return quotaSnapshot{}, errors.New("Codex 额度请求失败")
+		return quotaSnapshot{}, errors.New("Codex quota request failed")
 	}
 	if response.StatusCode != http.StatusOK {
-		return quotaSnapshot{}, fmt.Errorf("Codex 额度接口返回 %d", response.StatusCode)
+		return quotaSnapshot{}, fmt.Errorf("Codex quota API returned %d", response.StatusCode)
 	}
 	remaining, resetAt, ok := parseCodexQuota(response.Body, now)
 	if !ok {
-		return quotaSnapshot{}, errors.New("Codex 额度响应缺少可用窗口")
+		return quotaSnapshot{}, errors.New("Codex quota response has no usable window")
 	}
 	return readyQuota(remaining, resetAt, now), nil
 }
@@ -110,7 +110,7 @@ func probeAntigravity(ctx context.Context, host hostAPI, authIndex string, mater
 	for _, endpoint := range antigravityQuotaURLs {
 		response, err := host.httpDo(ctx, hostHTTPRequest{AuthIndex: authIndex, Method: http.MethodPost, URL: endpoint, Headers: headers, Body: body})
 		if err != nil {
-			return quotaSnapshot{}, errors.New("Antigravity 额度请求失败")
+			return quotaSnapshot{}, errors.New("Antigravity quota request failed")
 		}
 		lastStatus = response.StatusCode
 		if response.StatusCode != http.StatusOK {
@@ -121,7 +121,7 @@ func probeAntigravity(ctx context.Context, host hostAPI, authIndex string, mater
 			return readyQuota(remaining, resetAt, now), nil
 		}
 	}
-	return quotaSnapshot{}, fmt.Errorf("Antigravity 额度接口返回 %d", lastStatus)
+	return quotaSnapshot{}, fmt.Errorf("Antigravity quota API returned %d", lastStatus)
 }
 
 func readyQuota(remaining int, resetAt *time.Time, now time.Time) quotaSnapshot {

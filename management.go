@@ -60,17 +60,17 @@ func (r *runtime) handleManagement(ctx context.Context, raw []byte) (managementR
 		}
 		return jsonManagementResponse(http.StatusOK, state), nil
 	case method == http.MethodPost && path == "/preview":
-		result, err := r.run(ctx, false, "手动预览")
+		result, err := r.run(ctx, false, "Manual preview")
 		if err != nil {
 			status := http.StatusInternalServerError
-			if strings.Contains(err.Error(), "正在执行") {
+			if errors.Is(err, errProbeInProgress) {
 				status = http.StatusConflict
 			}
 			return jsonManagementResponse(status, map[string]string{"error": safeError(err)}), nil
 		}
 		return jsonManagementResponse(http.StatusOK, result), nil
 	case method == http.MethodPost && path == "/apply":
-		result, err := r.run(ctx, true, "手动应用")
+		result, err := r.run(ctx, true, "Manual apply")
 		if err != nil {
 			return jsonManagementResponse(http.StatusInternalServerError, map[string]string{"error": safeError(err)}), nil
 		}
@@ -78,7 +78,7 @@ func (r *runtime) handleManagement(ctx context.Context, raw []byte) (managementR
 	case method == http.MethodPut && path == "/settings":
 		var next settings
 		if err := json.Unmarshal(body, &next); err != nil {
-			return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": "设置格式无效"}), nil
+			return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": "Invalid settings format"}), nil
 		}
 		if next.ManualTiers == nil {
 			next.ManualTiers = map[string]tierName{}

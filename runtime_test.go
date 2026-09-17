@@ -146,6 +146,20 @@ func TestManagementResourceContainsNoCredentialData(t *testing.T) {
 	}
 }
 
+func TestPreviewReturnsConflictWhileQuotaCheckRuns(t *testing.T) {
+	r := newRuntime(&fakeHost{})
+	r.runMu.Lock()
+	defer r.runMu.Unlock()
+	request, _ := json.Marshal(map[string]any{"Method": "POST", "Path": "/v0/management/plugins/credential-tier-router/preview"})
+	response, err := r.handleManagement(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != 409 {
+		t.Fatalf("got status %d, want 409", response.StatusCode)
+	}
+}
+
 func TestManagedAuthFileExcludesBackupPaths(t *testing.T) {
 	if managedAuthFile(authFile{Name: "backups/old/codex-account.json", Provider: "codex"}) {
 		t.Fatal("backup subdirectory entry must not be managed")

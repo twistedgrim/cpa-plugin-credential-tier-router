@@ -63,6 +63,22 @@ For Management Center v1.29.2, use Credential Tiers v0.1.3 and open the plugin f
 
 The plugin currently manages `codex` and `antigravity` auth files. For Antigravity, the UI can evaluate either the Gemini quota group or the Claude/GPT quota group.
 
+### Separate Codex quota windows
+
+Under **Quota bands**, turn on **Enable separate Codex thresholds** to set independent Primary and Regular minimums for the 5-hour and weekly windows. Both default to 50% Primary and 20% Regular. The lower tier wins when both windows are present; a weekly-only response uses the weekly thresholds. Any exhausted window pauses the credential. The account table shows each window’s remaining quota and reset time.
+
+The option is off by default. Only opt-in Codex probes require recognized window durations (18,000 or 604,800 seconds). Malformed or unexpectedly missing windows use the existing consecutive-failure protection. The other strategies and Antigravity keep their existing behavior.
+
+To seed this on a new installation, add these keys under the plugin’s `config.yaml` entry. Each pair must satisfy `1 <= regular < primary <= 100`:
+
+```yaml
+codex_window_bands: true
+codex_5h_primary_min: 50
+codex_5h_regular_min: 20
+codex_weekly_primary_min: 50
+codex_weekly_regular_min: 20
+```
+
 ## Build
 
 Go 1.24 and a C compiler are required because CPA's native plugin ABI uses cgo.

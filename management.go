@@ -90,7 +90,7 @@ func (r *runtime) handleManagement(ctx context.Context, raw []byte) (managementR
 		}
 		return jsonManagementResponse(http.StatusOK, result), nil
 	case method == http.MethodPut && path == "/settings":
-		var next settings
+		next := settings{codexBandSettings: defaultCodexBandSettings()}
 		if err := json.Unmarshal(body, &next); err != nil {
 			return managementError(http.StatusBadRequest, "Invalid settings format"), nil
 		}

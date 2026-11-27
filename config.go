@@ -25,6 +25,7 @@ const (
 )
 
 type settings struct {
+	codexBandSettings
 	AutoApply        bool                `json:"auto_apply"`
 	Strategy         strategyName        `json:"strategy"`
 	IntervalMinutes  int                 `json:"interval_minutes"`
@@ -34,15 +35,35 @@ type settings struct {
 	ManualTiers      map[string]tierName `json:"manual_tiers,omitempty"`
 }
 
+type codexBandSettings struct {
+	CodexWindowBands      bool `json:"codex_window_bands"`
+	Codex5hPrimaryMin     int  `json:"codex_5h_primary_min"`
+	Codex5hRegularMin     int  `json:"codex_5h_regular_min"`
+	CodexWeeklyPrimaryMin int  `json:"codex_weekly_primary_min"`
+	CodexWeeklyRegularMin int  `json:"codex_weekly_regular_min"`
+}
+
+func defaultCodexBandSettings() codexBandSettings {
+	return codexBandSettings{
+		Codex5hPrimaryMin: 50, Codex5hRegularMin: 20,
+		CodexWeeklyPrimaryMin: 50, CodexWeeklyRegularMin: 20,
+	}
+}
+
+func (s settings) useCodexWindowBands(provider string) bool {
+	return provider == "codex" && s.Strategy == strategyQuota && s.CodexWindowBands
+}
+
 func defaultSettings() settings {
 	return settings{
-		AutoApply:        false,
-		Strategy:         strategyQuota,
-		IntervalMinutes:  15,
-		Providers:        []string{"codex", "antigravity"},
-		AntigravityGroup: "gemini",
-		FailureThreshold: 3,
-		ManualTiers:      map[string]tierName{},
+		codexBandSettings: defaultCodexBandSettings(),
+		AutoApply:         false,
+		Strategy:          strategyQuota,
+		IntervalMinutes:   15,
+		Providers:         []string{"codex", "antigravity"},
+		AntigravityGroup:  "gemini",
+		FailureThreshold:  3,
+		ManualTiers:       map[string]tierName{},
 	}
 }
 
@@ -51,6 +72,17 @@ func (s settings) validate() error {
 	case strategyQuota, strategyRotate, strategyReset, strategyManual:
 	default:
 		return fmt.Errorf("unknown strategy %q", s.Strategy)
+	}
+	for _, band := range []struct {
+		name             string
+		primary, regular int
+	}{
+		{"codex_5h", s.Codex5hPrimaryMin, s.Codex5hRegularMin},
+		{"codex_weekly", s.CodexWeeklyPrimaryMin, s.CodexWeeklyRegularMin},
+	} {
+		if band.regular < 1 || band.primary <= band.regular || band.primary > 100 {
+			return fmt.Errorf("%s thresholds must satisfy 1 <= regular < primary <= 100", band.name)
+		}
 	}
 	if s.IntervalMinutes < 5 || s.IntervalMinutes > 1440 {
 		return errors.New("interval_minutes must be between 5 and 1440")
@@ -131,6 +163,30 @@ func parsePluginConfig(raw []byte) (settings, error) {
 	}
 	if value := values["failure_threshold"]; value != "" {
 		cfg.FailureThreshold, _ = strconv.Atoi(value)
+	}
+	if value, exists := values["codex_window_bands"]; exists {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return settings{}, errors.New("codex_window_bands must be true or false")
+		}
+		cfg.CodexWindowBands = enabled
+	}
+	for _, band := range []struct {
+		key    string
+		target *int
+	}{
+		{"codex_5h_primary_min", &cfg.Codex5hPrimaryMin},
+		{"codex_5h_regular_min", &cfg.Codex5hRegularMin},
+		{"codex_weekly_primary_min", &cfg.CodexWeeklyPrimaryMin},
+		{"codex_weekly_regular_min", &cfg.CodexWeeklyRegularMin},
+	} {
+		if value, exists := values[band.key]; exists {
+			parsed, err := strconv.Atoi(value)
+			if err != nil {
+				return settings{}, fmt.Errorf("%s must be an integer", band.key)
+			}
+			*band.target = parsed
+		}
 	}
 	return cfg, cfg.validate()
 }

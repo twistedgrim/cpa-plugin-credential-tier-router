@@ -83,15 +83,15 @@ func TestStrategies(t *testing.T) {
 func TestFailedQuotaKeepsLastResultThenUnknown(t *testing.T) {
 	now := time.Now().UTC()
 	previous := readyQuota(62, ptrTime(now.Add(time.Hour)), now)
-	first := failedQuota(previous, errors.New("temporary"), 3, now.Add(time.Minute))
+	first := failedQuota(previous, 3, now.Add(time.Minute))
 	if first.Status != quotaCached || first.Remaining == nil || *first.Remaining != 62 {
 		t.Fatalf("first failure did not retain last quota: %+v", first)
 	}
-	second := failedQuota(first, errors.New("temporary"), 3, now.Add(2*time.Minute))
+	second := failedQuota(first, 3, now.Add(2*time.Minute))
 	if second.Status != quotaCached {
 		t.Fatalf("second failure status=%s", second.Status)
 	}
-	third := failedQuota(second, errors.New("temporary"), 3, now.Add(3*time.Minute))
+	third := failedQuota(second, 3, now.Add(3*time.Minute))
 	if third.Status != quotaUnknown || third.Remaining != nil {
 		t.Fatalf("third failure should be unknown: %+v", third)
 	}

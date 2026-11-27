@@ -48,6 +48,10 @@ plugins:
 
 Start with `auto_apply: false`, open **Credential Tiers** in Management Center, refresh quota, and review the preview before enabling automatic writeback.
 
+**Preview changes** and **Refresh quota** save the current settings, restart the scheduler, then send `POST /preview`. Preview refreshes and persists the quota cache without writing credential priorities or recording an apply. Saving with auto-apply enabled can still schedule a later write.
+
+For Management Center v1.29.2, use Credential Tiers v0.1.3 and open the plugin from the Management Center served on the same origin (scheme, host, and port). Sign in with **Remember password** enabled on that origin. The embedded page reads both the older `enc::v1::` and newer `enc::v2::` saved sign-in formats.
+
 ## Policies
 
 | Policy | Behavior |
@@ -66,7 +70,8 @@ Go 1.24 and a C compiler are required because CPA's native plugin ABI uses cgo.
 ```bash
 make test
 make vet
-make package VERSION=0.1.2
+node --test web/app.test.cjs
+make package VERSION=0.1.3
 ```
 
 The package target writes a platform zip and checksum into `dist/`.

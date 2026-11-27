@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"strconv"
@@ -55,7 +56,7 @@ func probeCredential(ctx context.Context, host hostAPI, file authFile, cfg setti
 	material := parseAuthMaterial(document.JSON)
 	switch providerOf(file) {
 	case "codex":
-		return probeCodex(ctx, host, file.AuthIndex, material, now)
+		return probeCodex(ctx, host, file.AuthIndex, material, now, cfg.useCodexWindowBands("codex"))
 	case "antigravity":
 		return probeAntigravity(ctx, host, file.AuthIndex, material, cfg.AntigravityGroup, now)
 	default:
@@ -63,7 +64,7 @@ func probeCredential(ctx context.Context, host hostAPI, file authFile, cfg setti
 	}
 }
 
-func probeCodex(ctx context.Context, host hostAPI, authIndex string, material authMaterial, now time.Time) (quotaSnapshot, error) {
+func probeCodex(ctx context.Context, host hostAPI, authIndex string, material authMaterial, now time.Time, windowBands bool) (quotaSnapshot, error) {
 	token := material.AccessToken
 	if token == "" {
 		token = "$TOKEN$"
@@ -83,6 +84,9 @@ func probeCodex(ctx context.Context, host hostAPI, authIndex string, material au
 	}
 	if response.StatusCode != http.StatusOK {
 		return quotaSnapshot{}, fmt.Errorf("Codex quota API returned %d", response.StatusCode)
+	}
+	if windowBands {
+		return parseCodexWindowQuota(response.Body, now)
 	}
 	remaining, resetAt, ok := parseCodexQuota(response.Body, now)
 	if !ok {
@@ -163,6 +167,94 @@ func parseCodexQuota(raw []byte, now time.Time) (int, *time.Time, bool) {
 		}
 	}
 	return selected.remaining, selected.resetAt, true
+}
+
+func parseCodexWindowQuota(raw []byte, now time.Time) (quotaSnapshot, error) {
+	var root map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if decoder.Decode(&root) != nil || decoder.Decode(new(any)) != io.EOF {
+		return quotaSnapshot{}, errors.New("Invalid Codex quota response")
+	}
+	rateLimit, _ := root["rate_limit"].(map[string]any)
+	windows := make(map[string]*quotaWindow, 2)
+	selected := quotaWindow{Remaining: 101}
+	for _, key := range []string{"primary_window", "secondary_window"} {
+		if rateLimit[key] == nil {
+			continue
+		}
+		window, ok := rateLimit[key].(map[string]any)
+		if !ok {
+			return quotaSnapshot{}, fmt.Errorf("Invalid Codex %s", key)
+		}
+		var kind string
+		seconds, _ := toFloat(window["limit_window_seconds"])
+		switch seconds {
+		case 18000:
+			kind = "5h"
+		case 604800:
+			kind = "weekly"
+		default:
+			return quotaSnapshot{}, fmt.Errorf("Codex %s has no recognized duration", key)
+		}
+		if _, exists := windows[kind]; exists {
+			return quotaSnapshot{}, fmt.Errorf("Duplicate Codex %s window", kind)
+		}
+		remaining, ok := codexWindowPercent(window)
+		reset := codexWindowResetAt(window, now)
+		if !ok || reset == nil {
+			return quotaSnapshot{}, fmt.Errorf("Codex %s window has invalid quota or reset time", kind)
+		}
+		entry := quotaWindow{Remaining: remaining, ResetAt: *reset}
+		windows[kind] = &entry
+		if remaining < selected.Remaining {
+			selected = entry
+		}
+	}
+	if len(windows) == 0 {
+		return quotaSnapshot{}, errors.New("Codex quota response has no usable window")
+	}
+	quota := readyQuota(selected.Remaining, &selected.ResetAt, now)
+	quota.CodexWindows = windows
+	if raw, exists := rateLimit["limit_reached"]; exists {
+		reached, ok := toBool(raw)
+		if !ok {
+			return quotaSnapshot{}, errors.New("Invalid Codex rate-limit flag")
+		}
+		// Keep the aggregate compatible with strategies that ignore the root flag.
+		quota.CodexLimitReached = reached
+	}
+	return quota, nil
+}
+
+func codexWindowPercent(window map[string]any) (int, bool) {
+	if raw, exists := window["limit_reached"]; exists {
+		if _, ok := toBool(raw); !ok {
+			return 0, false
+		}
+	}
+	for _, key := range []string{"used_percent", "remaining", "used", "limit"} {
+		if raw, exists := window[key]; exists {
+			value, ok := toFloat(raw)
+			if !ok || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 ||
+				(key == "used_percent" && value > 100) || (key == "limit" && value == 0) {
+				return 0, false
+			}
+		}
+	}
+	return quotaPercent(window)
+}
+
+func codexWindowResetAt(window map[string]any, now time.Time) *time.Time {
+	if reset, ok := parseTime(window["reset_at"]); ok && reset.Year() >= 1 && reset.Year() <= 9999 {
+		return reset
+	}
+	seconds, ok := toFloat(window["reset_after_seconds"])
+	if !ok || !(seconds >= 1 && seconds <= float64(math.MaxInt64/int64(time.Second))) {
+		return nil
+	}
+	reset := now.UTC().Add(time.Duration(seconds) * time.Second)
+	return &reset
 }
 
 func quotaPercent(window map[string]any) (int, bool) {

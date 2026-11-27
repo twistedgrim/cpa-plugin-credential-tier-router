@@ -67,6 +67,14 @@ type quotaSnapshot struct {
 	Status     quotaStatus `json:"status"`
 	FailCount  int         `json:"fail_count,omitempty"`
 	LastError  string      `json:"last_error,omitempty"`
+
+	CodexWindows      map[string]*quotaWindow `json:"codex_windows,omitempty"`
+	CodexLimitReached bool                    `json:"codex_limit_reached,omitempty"`
+}
+
+type quotaWindow struct {
+	Remaining int       `json:"remaining"`
+	ResetAt   time.Time `json:"reset_at"`
 }
 
 type credentialState struct {

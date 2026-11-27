@@ -50,10 +50,24 @@
     <section class="panel strategy-section">
       <div class="section-heading"><div><h2>Choose a routing strategy</h2><p>Tier changes mainly affect new requests; existing sessions may continue using their current credential.</p></div><span class="recommended-pill">Recommended: Quota bands</span></div>
       <div class="strategy-grid" id="strategyGrid" role="radiogroup" aria-label="Routing strategy">
-        <button class="strategy-card" type="button" role="radio" data-strategy="quota_bands" aria-checked="true"><span class="radio-mark"></span><strong>Quota bands</strong><small>Automatically assign Primary, Regular, Backup, or Paused based on remaining quota.</small><span class="strategy-rule">≥50% Primary · 20%–49% Regular · 1%–19% Backup</span></button>
+        <button class="strategy-card" type="button" role="radio" data-strategy="quota_bands" aria-checked="true"><span class="radio-mark"></span><strong>Quota bands</strong><small>Automatically assign Primary, Regular, Backup, or Paused based on remaining quota.</small><span class="strategy-rule">Defaults: ≥50% Primary · ≥20% Regular · 1%–19% Backup</span></button>
         <button class="strategy-card" type="button" role="radio" data-strategy="balanced" aria-checked="false"><span class="radio-mark"></span><strong>Balanced rotation</strong><small>Keep healthy credentials at the same tier; CPA distributes requests in rotation.</small><span class="strategy-rule">For accounts with similar quota and reliability</span></button>
         <button class="strategy-card" type="button" role="radio" data-strategy="reset_soon" aria-checked="false"><span class="radio-mark"></span><strong>Reset soon first</strong><small>Prioritize accounts with remaining quota that reset within 24 hours.</small><span class="strategy-rule">Use quota before it resets</span></button>
         <button class="strategy-card" type="button" role="radio" data-strategy="manual" aria-checked="false"><span class="radio-mark"></span><strong>Manual tiers</strong><small>Choose Primary, Regular, Backup, or Paused for each account.</small><span class="strategy-rule">For fixed tier assignments</span></button>
+      </div>
+    </section>
+
+    <section class="panel strategy-section" id="codexBandSettings" aria-labelledby="codexBandHeading" hidden>
+      <div class="section-heading"><div><h2 id="codexBandHeading">Codex quota windows</h2><p>Use separate thresholds for the 5-hour and weekly windows.</p></div></div>
+      <label class="switch-field"><span>Enable separate Codex thresholds</span><input id="codexWindowBands" type="checkbox" role="switch" aria-controls="codexBandFields"><span class="switch" aria-hidden="true"></span></label>
+      <div id="codexBandFields" hidden>
+        <div class="advanced-grid">
+          <label class="field"><span>5-hour Primary minimum (%)</span><input id="codex5hPrimaryMin" type="number" min="2" max="100" step="1"></label>
+          <label class="field"><span>5-hour Regular minimum (%)</span><input id="codex5hRegularMin" type="number" min="1" max="99" step="1"></label>
+          <label class="field"><span>Weekly Primary minimum (%)</span><input id="codexWeeklyPrimaryMin" type="number" min="2" max="100" step="1"></label>
+          <label class="field"><span>Weekly Regular minimum (%)</span><input id="codexWeeklyRegularMin" type="number" min="1" max="99" step="1"></label>
+        </div>
+        <p class="band-help">The lower tier wins. A weekly-only account uses its weekly tier. Below Regular is Backup; an exhausted window pauses the credential.</p>
       </div>
     </section>
 

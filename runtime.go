@@ -285,9 +285,20 @@ func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, er
 			continue
 		}
 		current := tierFromPriority(file.Priority, file.Disabled)
+		previous := cache[file.AuthIndex]
 		quota, probeErr := probeCredential(ctx, r.host, file, cfg, now)
+		if probeErr == nil && cfg.useCodexWindowBands(provider) {
+			for _, kind := range []string{"5h", "weekly"} {
+				_, seen := previous.CodexWindows[kind]
+				_, present := quota.CodexWindows[kind]
+				if seen && !present {
+					probeErr = fmt.Errorf("Previously observed Codex %s window is missing", kind)
+					break
+				}
+			}
+		}
 		if probeErr != nil {
-			quota = failedQuota(cache[file.AuthIndex], cfg.FailureThreshold, now)
+			quota = failedQuota(previous, cfg.FailureThreshold, now)
 		}
 		cache[file.AuthIndex] = quota
 		proposed, reason := chooseTier(cfg, file, current, quota, now)
@@ -340,7 +351,15 @@ func failedQuota(previous quotaSnapshot, threshold int, now time.Time) quotaSnap
 	if failCount >= threshold {
 		status = quotaUnknown
 	}
-	return quotaSnapshot{ObservedAt: now, Status: status, FailCount: failCount, LastError: quotaCheckFailed}
+	// Keep the last window shape for continuity without exposing expired quota.
+	expired := quotaSnapshot{ObservedAt: now, Status: status, FailCount: failCount, LastError: quotaCheckFailed}
+	if len(previous.CodexWindows) > 0 {
+		expired.CodexWindows = make(map[string]*quotaWindow, len(previous.CodexWindows))
+		for kind := range previous.CodexWindows {
+			expired.CodexWindows[kind] = nil
+		}
+	}
+	return expired
 }
 
 func chooseTier(cfg settings, file authFile, current tierName, quota quotaSnapshot, now time.Time) (tierName, string) {
@@ -352,6 +371,9 @@ func chooseTier(cfg settings, file authFile, current tierName, quota quotaSnapsh
 	}
 	if quota.Status == quotaUnknown || quota.Status == quotaRetry || quota.Remaining == nil {
 		return current, "Quota is temporarily unknown; keeping the current tier"
+	}
+	if cfg.useCodexWindowBands(providerOf(file)) {
+		return chooseCodexWindowTier(cfg, current, quota)
 	}
 	remaining := *quota.Remaining
 	if remaining <= 0 {
@@ -380,6 +402,45 @@ func chooseTier(cfg settings, file authFile, current tierName, quota quotaSnapsh
 			return tierBackup, "1%–19% quota remaining"
 		}
 	}
+}
+
+func chooseCodexWindowTier(cfg settings, current tierName, quota quotaSnapshot) (tierName, string) {
+	var reasons []string
+	selected := tierPrimary
+	for _, band := range []struct {
+		kind, label      string
+		primary, regular int
+	}{
+		{"5h", "5-hour", cfg.Codex5hPrimaryMin, cfg.Codex5hRegularMin},
+		{"weekly", "Weekly", cfg.CodexWeeklyPrimaryMin, cfg.CodexWeeklyRegularMin},
+	} {
+		window := quota.CodexWindows[band.kind]
+		if window == nil {
+			continue
+		}
+		var tier tierName
+		switch {
+		case window.Remaining <= 0:
+			tier = tierPaused
+		case window.Remaining >= band.primary:
+			tier = tierPrimary
+		case window.Remaining >= band.regular:
+			tier = tierRegular
+		default:
+			tier = tierBackup
+		}
+		if tier.priority() < selected.priority() {
+			selected = tier
+		}
+		reasons = append(reasons, fmt.Sprintf("%s: %d%% remaining (%s)", band.label, window.Remaining, tier))
+	}
+	if len(reasons) == 0 {
+		return current, "Waiting for Codex window quota; keeping the current tier"
+	}
+	if quota.CodexLimitReached {
+		return tierPaused, "Codex reports a quota limit; waiting for reset"
+	}
+	return selected, strings.Join(reasons, "; ")
 }
 
 func (r *runtime) applyPlan(ctx context.Context, files []authFile, result plan) error {

@@ -59,11 +59,7 @@ func (r *runtime) handle(ctx context.Context, method string, request []byte) []b
 	case "management.register":
 		return success(managementRegistration())
 	case "management.handle":
-		response, err := r.handleManagement(ctx, request)
-		if err != nil {
-			return failure("invalid_request", err.Error(), false)
-		}
-		return success(response)
+		return r.handleManagementCall(ctx, request)
 	default:
 		return failure("invalid_request", fmt.Sprintf("unsupported method %q", method), false)
 	}
@@ -209,6 +205,12 @@ func (r *runtime) dashboard(ctx context.Context) (dashboardState, error) {
 	history := append([]historyEntry(nil), r.state.History...)
 	next := r.nextProbe
 	r.mu.Unlock()
+	// Old history entries may contain host errors; keep their counts and timestamps.
+	for i := range history {
+		if strings.HasPrefix(history[i].Summary, "Apply failed:") {
+			history[i].Summary = "Apply failed"
+		}
+	}
 	if len(latest.Credentials) == 0 {
 		var err error
 		latest, err = r.inspect(ctx)
@@ -240,6 +242,9 @@ func (r *runtime) inspect(ctx context.Context) (plan, error) {
 		}
 		current := tierFromPriority(file.Priority, file.Disabled)
 		quota := quotaCache[file.AuthIndex]
+		if quota.LastError != "" {
+			quota.LastError = quotaCheckFailed
+		}
 		if quota.Status == "" {
 			quota.Status = quotaUnknown
 		}
@@ -282,7 +287,7 @@ func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, er
 		current := tierFromPriority(file.Priority, file.Disabled)
 		quota, probeErr := probeCredential(ctx, r.host, file, cfg, now)
 		if probeErr != nil {
-			quota = failedQuota(cache[file.AuthIndex], probeErr, cfg.FailureThreshold, now)
+			quota = failedQuota(cache[file.AuthIndex], cfg.FailureThreshold, now)
 		}
 		cache[file.AuthIndex] = quota
 		proposed, reason := chooseTier(cfg, file, current, quota, now)
@@ -305,7 +310,7 @@ func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, er
 	}
 	if apply {
 		if err := r.applyPlan(ctx, files, result); err != nil {
-			r.recordHistory(trigger, result.Changes, 1, "Apply failed: "+safeError(err))
+			r.recordHistory(trigger, result.Changes, 1, "Apply failed")
 			return plan{}, err
 		}
 		r.recordHistory(trigger, result.Changes, result.Unknown, historySummary(result))
@@ -321,20 +326,21 @@ func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, er
 	return result, nil
 }
 
-func failedQuota(previous quotaSnapshot, probeErr error, threshold int, now time.Time) quotaSnapshot {
+const quotaCheckFailed = "Quota check failed"
+
+func failedQuota(previous quotaSnapshot, threshold int, now time.Time) quotaSnapshot {
 	failCount := previous.FailCount + 1
-	message := safeError(probeErr)
 	if previous.Remaining != nil && failCount < threshold {
 		previous.Status = quotaCached
 		previous.FailCount = failCount
-		previous.LastError = message
+		previous.LastError = quotaCheckFailed
 		return previous
 	}
 	status := quotaRetry
 	if failCount >= threshold {
 		status = quotaUnknown
 	}
-	return quotaSnapshot{ObservedAt: now, Status: status, FailCount: failCount, LastError: message}
+	return quotaSnapshot{ObservedAt: now, Status: status, FailCount: failCount, LastError: quotaCheckFailed}
 }
 
 func chooseTier(cfg settings, file authFile, current tierName, quota quotaSnapshot, now time.Time) (tierName, string) {
@@ -415,17 +421,16 @@ func (r *runtime) applyPlan(ctx context.Context, files []authFile, result plan) 
 }
 
 func (r *runtime) updateSettings(next settings) error {
-	if err := next.validate(); err != nil {
+	r.mu.Lock()
+	state := r.state
+	state.Settings = next
+	if err := r.store.save(state); err != nil {
+		r.mu.Unlock()
 		return err
 	}
-	r.mu.Lock()
 	r.state.Settings = next
 	r.latest = plan{}
-	state := r.state
 	r.mu.Unlock()
-	if err := r.store.save(state); err != nil {
-		return err
-	}
 	r.restartWorker()
 	return nil
 }
@@ -445,18 +450,6 @@ func historySummary(result plan) string {
 		return "Quota check complete; no credentials need changes"
 	}
 	return fmt.Sprintf("Updated %d credentials; new priorities mainly affect future requests", result.Changes)
-}
-
-func safeError(err error) string {
-	if err == nil {
-		return ""
-	}
-	message := strings.TrimSpace(err.Error())
-	message = strings.ReplaceAll(message, "Bearer ", "Bearer [REDACTED]")
-	if len(message) > 180 {
-		message = message[:180]
-	}
-	return message
 }
 
 func cloneQuota(source map[string]quotaSnapshot) map[string]quotaSnapshot {

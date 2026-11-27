@@ -30,6 +30,21 @@ type managementResponse struct {
 	Body       []byte              `json:"Body"`
 }
 
+// CPA converts plugin envelope failures into a plain HTTP 502. Return management
+// errors as HTTP responses inside a successful envelope instead.
+func (r *runtime) handleManagementCall(ctx context.Context, raw []byte) (response []byte) {
+	defer func() {
+		if recover() != nil {
+			response = success(managementError(http.StatusInternalServerError, "Management request failed"))
+		}
+	}()
+	result, err := r.handleManagement(ctx, raw)
+	if err != nil {
+		result = managementError(http.StatusInternalServerError, "Management request failed")
+	}
+	return success(result)
+}
+
 func (r *runtime) handleManagement(ctx context.Context, raw []byte) (managementResponse, error) {
 	var request managementRequest
 	if err := json.Unmarshal(raw, &request); err != nil {
@@ -56,35 +71,37 @@ func (r *runtime) handleManagement(ctx context.Context, raw []byte) (managementR
 	case method == http.MethodGet && path == "/state":
 		state, err := r.dashboard(ctx)
 		if err != nil {
-			return jsonManagementResponse(http.StatusInternalServerError, map[string]string{"error": safeError(err)}), nil
+			return managementError(http.StatusInternalServerError, "Could not load credential status"), nil
 		}
 		return jsonManagementResponse(http.StatusOK, state), nil
 	case method == http.MethodPost && path == "/preview":
 		result, err := r.run(ctx, false, "Manual preview")
+		if errors.Is(err, errProbeInProgress) {
+			return managementError(http.StatusConflict, errProbeInProgress.Error()), nil
+		}
 		if err != nil {
-			status := http.StatusInternalServerError
-			if errors.Is(err, errProbeInProgress) {
-				status = http.StatusConflict
-			}
-			return jsonManagementResponse(status, map[string]string{"error": safeError(err)}), nil
+			return managementError(http.StatusInternalServerError, "Could not preview tier changes"), nil
 		}
 		return jsonManagementResponse(http.StatusOK, result), nil
 	case method == http.MethodPost && path == "/apply":
 		result, err := r.run(ctx, true, "Manual apply")
 		if err != nil {
-			return jsonManagementResponse(http.StatusInternalServerError, map[string]string{"error": safeError(err)}), nil
+			return managementError(http.StatusInternalServerError, "Could not apply tier changes"), nil
 		}
 		return jsonManagementResponse(http.StatusOK, result), nil
 	case method == http.MethodPut && path == "/settings":
 		var next settings
 		if err := json.Unmarshal(body, &next); err != nil {
-			return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": "Invalid settings format"}), nil
+			return managementError(http.StatusBadRequest, "Invalid settings format"), nil
 		}
 		if next.ManualTiers == nil {
 			next.ManualTiers = map[string]tierName{}
 		}
+		if err := next.validate(); err != nil {
+			return managementError(http.StatusBadRequest, "Invalid settings values"), nil
+		}
 		if err := r.updateSettings(next); err != nil {
-			return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": safeError(err)}), nil
+			return managementError(http.StatusInternalServerError, "Could not save settings"), nil
 		}
 		return jsonManagementResponse(http.StatusOK, map[string]any{"saved": true, "settings": next}), nil
 	default:
@@ -148,6 +165,10 @@ func renderStatusHTML() ([]byte, error) {
 	page := strings.Replace(string(html), "/*__INLINE_CSS__*/", string(css), 1)
 	page = strings.Replace(page, "/*__INLINE_JS__*/", string(js), 1)
 	return []byte(page), nil
+}
+
+func managementError(status int, message string) managementResponse {
+	return jsonManagementResponse(status, map[string]string{"error": message})
 }
 
 func jsonManagementResponse(status int, payload any) managementResponse {
